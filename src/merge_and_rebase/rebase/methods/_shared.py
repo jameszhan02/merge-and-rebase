@@ -1029,6 +1029,53 @@ class _LayerTransform:
     t_out: torch.Tensor | None = None
 
 
+_LAYER_INDEX_RE = re.compile(r"\.layers\.(\d+)\.")
+
+
+def _layer_index_of(key: str) -> int | None:
+    """Decoder layer index embedded in a transportable key, or ``None`` for a non-layer key (e.g. the final norm)."""
+    m = _LAYER_INDEX_RE.search(key)
+    return int(m.group(1)) if m else None
+
+
+def filter_transforms_by_layer(
+    transforms_by_key: Mapping[str, "_LayerTransform"],
+    layer_filter: Mapping[str, Any] | None,
+) -> dict[str, "_LayerTransform"]:
+    """Selective-transport gate (Theseus Experiment 3): drop transforms for layers outside ``layer_filter``.
+
+    ``layer_filter`` is ``{"include": [idx, ...]}`` or ``{"exclude": [idx, ...]}`` (mutually exclusive); ``None``
+    is a no-op. A key dropped here is simply absent from the returned mapping: ``apply_prepared_transforms`` then
+    treats it as a missing transform, which under the pipeline's default ``strict=False`` leaves that key's slice
+    of the target's own base weights untouched (the delta contributes zero there) rather than raising. Keys with
+    no ``.layers.<n>.`` segment (e.g. the final norm) are never filtered -- the filter only ever selects among
+    decoder layers.
+    """
+    if not layer_filter:
+        return dict(transforms_by_key)
+    include = layer_filter.get("include")
+    exclude = layer_filter.get("exclude")
+    if include is not None and exclude is not None:
+        raise ValueError("layer_filter accepts 'include' or 'exclude', not both")
+    if include is None and exclude is None:
+        raise ValueError("layer_filter must set 'include' or 'exclude'")
+    include_set = {int(i) for i in include} if include is not None else None
+    exclude_set = {int(i) for i in exclude} if exclude is not None else set()
+
+    kept: dict[str, _LayerTransform] = {}
+    for key, transform in transforms_by_key.items():
+        idx = _layer_index_of(key)
+        if idx is None:
+            kept[key] = transform
+            continue
+        if include_set is not None:
+            if idx in include_set:
+                kept[key] = transform
+        elif idx not in exclude_set:
+            kept[key] = transform
+    return kept
+
+
 @dataclass(frozen=True)
 class _PrecomputeDiagnostics:
     slots: int

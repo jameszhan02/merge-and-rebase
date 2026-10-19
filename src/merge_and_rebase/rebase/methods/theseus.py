@@ -45,6 +45,7 @@ from ._shared import (  # noqa: F401
     _apply_transforms_to_visual_delta,  # noqa: F401
     _ApplyDiagnostics,  # noqa: F401
     _build_grouped_covariances,  # noqa: F401
+    filter_transforms_by_layer,
     _build_grouped_transforms,  # noqa: F401
     _compute_alignment_map,  # noqa: F401
     _compute_alignment_map_from_matrix_proxies,  # noqa: F401
@@ -518,6 +519,7 @@ class TheseusRebase:
         if device_transform not in {"cpu", "gpu"}:
             raise ValueError("device_transform must be one of: cpu, gpu")
         svd_device = device if device_transform == "gpu" else "cpu"
+        layer_filter = kwargs.pop("layer_filter", None)
         reject_unread_method_params(self.name, kwargs)
         del kwargs
         #Config fallbacks num_batches -> n_batches
@@ -765,6 +767,14 @@ class TheseusRebase:
                         )
                 except Exception as exc:
                     logger.warning("%s prepare: failed to recompose patched attention blocks: %s", self.name, exc)
+
+        if layer_filter is not None:
+            before = len(transforms_by_key)
+            transforms_by_key = filter_transforms_by_layer(transforms_by_key, layer_filter)
+            if verbose:
+                print(
+                    f"{log_prefix} prepare: layer_filter kept {len(transforms_by_key)}/{before} transforms"
+                )
 
         if verbose:
             print(f"{log_prefix} prepare: done")
