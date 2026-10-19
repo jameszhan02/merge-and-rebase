@@ -51,6 +51,18 @@ diagnostic-explained failure is still a result.
 
 ## Step 4 — Experiment 0: sanity checks
 
+- Task-vector extraction command:
+  ```bash
+  uv run theseus-extract-task-vector \
+    --base <source-base-checkpoint> \
+    --tuned <source-rlvr-checkpoint> \
+    --output artifacts/theseus/source_rlvr_task_vector.safetensors \
+    --output-dtype fp32
+  ```
+- Task-vector summary: `artifacts/theseus/source_rlvr_task_vector.summary.json`
+- Per-parameter norms: `artifacts/theseus/source_rlvr_task_vector.stats.csv`
+- Per-layer norms: `artifacts/theseus/source_rlvr_task_vector.layers.csv`
+
 | Check | Expected | Observed | Pass? |
 |---|---|---|---|
 | 0a shape audit (layers/hidden/intermediate match) | 16/2048/8192 both sides | | |

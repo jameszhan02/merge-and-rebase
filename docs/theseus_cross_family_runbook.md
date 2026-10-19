@@ -55,14 +55,23 @@ uv run python -m merge_and_rebase.eval.llm_rebase \
 ```
 (`method: identity` just scores the target as-is — no transport — to get your real floor number.)
 
-**Source** (your pick): verify its exact shape before writing any config —
+**Source** (your pick): verify all three checkpoints and the source module layout before writing any config. The
+audit instantiates the source architecture with empty/meta weights, so printing its module tree does not load a 1B
+checkpoint into RAM or VRAM:
 
-```python
-from transformers import AutoConfig
-cfg = AutoConfig.from_pretrained("<source-checkpoint>")
-print(cfg.model_type, cfg.num_hidden_layers, cfg.hidden_size, cfg.intermediate_size)
-# must be: 16, 2048, 8192 to use depth_alignment.rule=index_match cleanly (see the index_match note below)
+```bash
+mkdir -p artifacts/theseus
+uv run theseus-model-audit \
+  --source-base <source-base-checkpoint> \
+  --source-tuned <source-rlvr-checkpoint> \
+  --target meta-llama/Llama-3.2-1B \
+  --json-output artifacts/theseus/model_audit.json \
+| tee artifacts/theseus/model_audit.log
 ```
+
+The command exits nonzero when a checkpoint is not 16 layers / hidden 2048 / intermediate 8192, when the source
+base and tuned configs differ architecturally, or when it cannot identify the source decoder-layer container.
+Use `--trust-remote-code` only when the source checkpoint actually requires it.
 
 If `cfg.model_type` isn't already `llama`, `qwen2`, or `qwen3` (check
 `src/merge_and_rebase/rebase/model_families/registry.py`), add a family adapter — this is the
@@ -87,22 +96,28 @@ differently-named norm, an extra QK-norm module like Qwen3's), that's the #1 rea
 
 ## 3. Experiment 0 — sanity checks (no transport yet)
 
-```python
-# scripts/exp0_sanity.py (ad hoc, not part of the package)
-import torch
-from transformers import AutoModelForCausalLM
+Extract and validate the source task vector from the two complete dense Hugging Face checkpoints:
 
-source = AutoModelForCausalLM.from_pretrained("<source-checkpoint>")
-target = AutoModelForCausalLM.from_pretrained("meta-llama/Llama-3.2-1B")
-
-# 0a/0b: per-layer task-vector norms (needs the source's own base, pre-RLVR, checkpoint too)
-source_base = AutoModelForCausalLM.from_pretrained("<source-base-checkpoint>")
-for name, p in source.state_dict().items():
-    if name in source_base.state_dict():
-        delta_norm = (p - source_base.state_dict()[name]).float().norm().item()
-        if delta_norm > 1e-6:
-            print(f"{name}: ||tau_A|| = {delta_norm:.4f}")
+```bash
+mkdir -p artifacts/theseus
+uv run theseus-extract-task-vector \
+  --base <source-base-checkpoint> \
+  --tuned <source-rlvr-checkpoint> \
+  --output artifacts/theseus/source_rlvr_task_vector.safetensors \
+  --output-dtype fp32 \
+| tee artifacts/theseus/task_vector_extract.log
 ```
+
+The command enforces identical floating-parameter keys and shapes, computes subtraction in fp32, rejects NaN/Inf
+and an effectively-zero result, and writes four artifacts:
+
+- `source_rlvr_task_vector.safetensors`: tensors keyed exactly like the source model, with `tau = tuned - base`;
+- `source_rlvr_task_vector.stats.csv`: per-parameter shape, Frobenius norm, relative norm and near-zero flag;
+- `source_rlvr_task_vector.layers.csv`: aggregate Frobenius norm by decoder layer;
+- `source_rlvr_task_vector.summary.json`: checkpoint provenance and global counts/norm.
+
+Use `--output-dtype bf16` only to reduce artifact size after the fp32 extraction has been validated; retain fp32 for
+the diagnostic run and paper numbers. This utility expects a full dense tuned checkpoint, not a LoRA-only adapter.
 
 Watch for: every transportable layer should show nonzero norm; a near-zero layer was frozen by
 RLVR and should be dropped from consideration for Experiment 3's layer-selection variants. NaN/Inf
