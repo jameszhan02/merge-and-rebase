@@ -10,6 +10,7 @@ from merge_and_rebase.eval.diagnostics.export_hf_checkpoint import (
     export_hf_checkpoint,
     load_complete_state,
 )
+from merge_and_rebase.eval.llm_rebase.artifacts import export_hf_alpha_sweep
 
 
 class _FakeModel(torch.nn.Module):
@@ -69,3 +70,42 @@ def test_export_hf_checkpoint_strict_and_atomic(tmp_path: Path, monkeypatch: pyt
 
     with pytest.raises(FileExistsError, match="already exists"):
         export_hf_checkpoint(base="fake-base", state_path=state_path, output_dir=output)
+
+
+def test_export_hf_alpha_sweep_materializes_distinct_complete_models(tmp_path: Path) -> None:
+    model = _FakeModel()
+    tokenizer = _FakeTokenizer()
+    base = {key: value.detach().clone() for key, value in model.state_dict().items()}
+    delta = {"proj.weight": torch.ones_like(base["proj.weight"])}
+
+    records = export_hf_alpha_sweep(
+        output_root=tmp_path / "sweep",
+        alphas=[0.0, 0.25],
+        target_model=model,
+        target_tokenizer=tokenizer,
+        target_base_sd=base,
+        merged_delta=delta,
+        output_dtype="fp32",
+    )
+
+    assert records == [
+        {"alpha": 0.0, "path": str(tmp_path / "sweep" / "alpha_0")},
+        {"alpha": 0.25, "path": str(tmp_path / "sweep" / "alpha_0.25")},
+    ]
+    assert (tmp_path / "sweep" / "alpha_0" / "model.safetensors").is_file()
+    manifest = json.loads(
+        (tmp_path / "sweep" / "alpha_0.25" / "theseus_export.json").read_text()
+    )
+    assert manifest["alpha"] == 0.25
+    assert torch.equal(model.proj.weight.detach(), base["proj.weight"] + 0.25)
+
+    with pytest.raises(FileExistsError, match="already exist"):
+        export_hf_alpha_sweep(
+            output_root=tmp_path / "sweep",
+            alphas=[0.0],
+            target_model=model,
+            target_tokenizer=tokenizer,
+            target_base_sd=base,
+            merged_delta=delta,
+            output_dtype="fp32",
+        )

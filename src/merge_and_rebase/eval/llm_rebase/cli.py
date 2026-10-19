@@ -27,6 +27,7 @@ from ...data.text_loaders import NLI_TASKS
 from ...models.text_lm import TextBuildConfig
 from ...run_logging import default_summary_path, finish_with_error, merge_logging_config, start_run
 from .alpha_search import run_alpha_search
+from .artifacts import export_hf_alpha_sweep
 from .context import build_runtime
 from .pipeline import run_rebase
 from .run_config import resolve_llm_method
@@ -95,6 +96,15 @@ def main() -> None:
         p.add_argument("--eval-single-task-tuned", action=argparse.BooleanOptionalAction, default=None)
         p.add_argument("--fine-tuned-acc-json", type=str, default=None)
         p.add_argument("--save-merged", type=str, default=None)
+        p.add_argument(
+            "--export-hf-root",
+            type=str,
+            default=None,
+            help="Skip internal evaluation and directly export complete HF checkpoints below this directory.",
+        )
+        p.add_argument("--export-hf-alphas", type=float, nargs="+", default=None)
+        p.add_argument("--export-hf-dtype", choices=["fp32", "bf16", "fp16"], default=None)
+        p.add_argument("--export-hf-max-shard-size", type=str, default=None)
 
         # Harness
         p.add_argument("--harness-tasks", type=str, default=None)
@@ -189,6 +199,10 @@ def main() -> None:
                 json.loads(args.fine_tuned_acc_json) if args.fine_tuned_acc_json else None
             ),
             "save_merged": args.save_merged,
+            "export_hf_root": args.export_hf_root,
+            "export_hf_alphas": args.export_hf_alphas,
+            "export_hf_dtype": args.export_hf_dtype,
+            "export_hf_max_shard_size": args.export_hf_max_shard_size,
             "harness_tasks": args.harness_tasks,
             "harness_num_fewshot": args.harness_num_fewshot,
             "harness_batch_size": args.harness_batch_size,
@@ -268,6 +282,41 @@ def main() -> None:
         )
         outputs = run_rebase(rt, run_logger)
         if outputs is None:
+            return
+        if cfg.get("export_hf_root") is not None:
+            if cfg.get("save_merged") is not None:
+                raise ValueError("Use either export_hf_root or save_merged, not both.")
+            raw_alphas = cfg.get("export_hf_alphas")
+            if raw_alphas is None:
+                raise ValueError("export_hf_root requires export_hf_alphas.")
+            if not isinstance(raw_alphas, (list, tuple)):
+                raw_alphas = [raw_alphas]
+            exported = export_hf_alpha_sweep(
+                output_root=Path(str(cfg["export_hf_root"])),
+                alphas=[float(value) for value in raw_alphas],
+                target_model=rt.models.target_llm.model,
+                target_tokenizer=rt.models.target_llm.tokenizer,
+                target_base_sd=rt.models.target_base_sd,
+                merged_delta=outputs.merged_delta,
+                output_dtype=str(cfg.get("export_hf_dtype", "bf16")),
+                max_shard_size=str(cfg.get("export_hf_max_shard_size", "2GB")),
+                manifest_context={
+                    "method": method_name,
+                    "source_model": str(source_model_name),
+                    "target_model": str(target_model_name),
+                    "calibration": rt.calibration.cache.provenance(),
+                },
+            )
+            if run_logger is not None:
+                run_logger.log_summary({
+                    "backend": "hf_export",
+                    "method_name": method_name,
+                    "exports": exported,
+                    "delta_stats": outputs.delta_stats,
+                    "task_vector_report": outputs.task_vector_report,
+                    "calibration_provenance": rt.calibration.cache.provenance(),
+                })
+                run_logger.finish("success")
             return
         record = run_alpha_search(rt, outputs)
         if run_logger is not None:

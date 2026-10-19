@@ -1,0 +1,50 @@
+{
+  "method": {
+    "name": "theseus",
+    "params": {
+      "num_batches": 100,
+      "seed": 0,
+      "seq_align": "interpolate",
+      "device_transform": "gpu",
+      "activation_cache_dir": "artifacts/theseus/activation_cache_full",
+      "activation_cache_mode": "auto",
+      "parameter_filter": {
+        "include": [
+          "self_attn.q_proj.weight",
+          "self_attn.k_proj.weight",
+          "self_attn.v_proj.weight",
+          "self_attn.o_proj.weight"
+        ]
+      }
+    }
+  },
+  "depth_alignment": {"rule": "index_match"},
+  "alpha": {"search": false, "value": 1.0},
+  "save": {
+    "hf_root": "artifacts/theseus/full_attention_hf",
+    "hf_alphas": [0.0, 0.05, 0.1, 0.2, 0.3, 0.5],
+    "hf_dtype": "bf16",
+    "hf_max_shard_size": "2GB"
+  },
+  "source_model_name_or_path": "/data/shared_ckpt/OLMo-2-0425-1B",
+  "target_model_name_or_path": "/data/shared_ckpt/Llama-3.2-1B",
+  "model_kind": "causal_lm",
+  "model_arch": "auto",
+  "tuned_bodies": {"gsm8k": "/data/shared_ckpt/opd_teacher"},
+  "device": "cuda",
+  "dtype": "bf16",
+  "seed": 0,
+  "calibration_n_sequences": 400,
+  "calibration_batch_size": 4,
+  "calibration_max_length": 192,
+  "calibration_dataset": {
+    "path": "gsm8k",
+    "name": "main",
+    "split": "train",
+    "text_columns": ["question", "answer"],
+    "text_template": "Below is an instruction that describes a task. Write a response that appropriately completes the request.\n\n### Instruction:\n{question}\n\n### Response:\n{answer}"
+  },
+  "harness_tasks": ["gsm8k"],
+  "harness_num_fewshot": 0,
+  "harness_batch_size": 4
+}

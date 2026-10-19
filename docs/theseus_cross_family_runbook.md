@@ -323,6 +323,39 @@ of where the GSM8K number lands.
 
 #### my short cut cmds
 
+##### full attention transport: export an alpha sweep directly as Hugging Face checkpoints
+
+This is the paper-style ordinary `theseus` run (not `theseus_gqa`). It uses 400 GSM8K training
+sequences for calibration, computes the transported task vector once, performs no lm-harness
+evaluation, and writes one complete BF16 Hugging Face directory per alpha:
+
+The calibration records are rendered with the same Alpaca instruction template used by the
+source tuning/evaluation protocol. Both models receive the same rendered string and tokenize it
+independently; model-family chat templates are not applied.
+
+```bash
+mkdir -p artifacts/theseus/logs
+
+uv run python -m merge_and_rebase.eval.llm_rebase \
+  --config configs/examples/llm/theseus_olmo2_llama32_attention_full_hf_sweep.json \
+  | tee artifacts/theseus/logs/full_attention_hf_sweep.log
+```
+
+Expected model directories:
+
+```text
+artifacts/theseus/full_attention_hf/alpha_0
+artifacts/theseus/full_attention_hf/alpha_0.05
+artifacts/theseus/full_attention_hf/alpha_0.1
+artifacts/theseus/full_attention_hf/alpha_0.2
+artifacts/theseus/full_attention_hf/alpha_0.3
+artifacts/theseus/full_attention_hf/alpha_0.5
+```
+
+Each directory is directly loadable with `AutoModelForCausalLM.from_pretrained`. The relation is
+`W_alpha = W_target_base + alpha * transported_task_vector`; calibration and SVD are not repeated
+for different alpha values. Existing output directories are never overwritten.
+
 ##### export a saved merged state as a Hugging Face checkpoint
 
 `--save-merged` writes a complete target-model state dict, not a delta. Export it with strict key checking and copy
