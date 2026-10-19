@@ -382,6 +382,33 @@ under `random_attention_controls/seed_<seed>/alpha_<alpha>`. Each model contains
 after casting back to the checkpoint dtype. The tool compensates for BF16/FP16 rounding per tensor
 so the saved random perturbation stays as close as possible to the requested effective norm.
 
+##### answer-token KL and gold-NLL comparison
+
+Compare complete local HF checkpoints on the same deterministically sampled GSM8K examples. The
+diagnostic renders the configured Alpaca prompt, teacher-forces the gold answer, and measures only
+answer-token positions so the shared prompt does not dilute the result:
+
+```bash
+uv run theseus-llm-kl \
+  --reference artifacts/theseus/full_attention_hf/alpha_0 \
+  --candidates \
+    artifacts/theseus/full_attention_hf/alpha_1 \
+    artifacts/theseus/random_attention_controls/seed_0/alpha_1 \
+    artifacts/theseus/random_attention_controls/seed_1/alpha_1 \
+    artifacts/theseus/random_attention_controls/seed_2/alpha_1 \
+  --dataset-split test \
+  --num-examples 200 \
+  --seed 0 \
+  --max-length 512 \
+  --dtype bf16 \
+  --output artifacts/theseus/kl/attention_alpha_1.json \
+  2>&1 | tee artifacts/theseus/logs/attention_alpha_1_kl.log
+```
+
+The aggregate output reports `mean_kl_reference_to_candidate`, `gold_nll_delta` (candidate minus
+base; negative is better), and next-token `top1_flip_rate`. The JSON also contains per-example
+values and the exact sampled dataset indices.
+
 ##### export a saved merged state as a Hugging Face checkpoint
 
 `--save-merged` writes a complete target-model state dict, not a delta. Export it with strict key checking and copy

@@ -40,6 +40,7 @@ theseus-model-audit = "merge_and_rebase.eval.diagnostics.theseus_model_audit:mai
 theseus-extract-task-vector = "merge_and_rebase.eval.diagnostics.extract_task_vector:main"
 theseus-export-hf = "merge_and_rebase.eval.diagnostics.export_hf_checkpoint:main"
 theseus-random-control = "merge_and_rebase.eval.diagnostics.theseus_random_control:main"
+theseus-llm-kl = "merge_and_rebase.eval.diagnostics.theseus_llm_kl:main"
 
 [project.optional-dependencies]
 # Core data stack for your vision benchmarks (HF datasets + PIL + hub)
