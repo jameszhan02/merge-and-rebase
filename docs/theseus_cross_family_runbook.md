@@ -358,6 +358,30 @@ Each directory is directly loadable with `AutoModelForCausalLM.from_pretrained`.
 `W_alpha = W_target_base + alpha * transported_task_vector`; calibration and SVD are not repeated
 for different alpha values. Existing output directories are never overwritten.
 
+##### per-tensor norm-matched random control
+
+After `alpha_0` and `alpha_1` have been exported, derive the effective BF16 THESEUS update and
+generate Gaussian random directions on exactly the same changed tensors. Every random tensor is
+independently rescaled to the corresponding THESEUS tensor's Frobenius norm:
+
+```bash
+uv run theseus-random-control \
+  --base /data/shengzhan/merge-and-rebase/artifacts/theseus/full_attention_hf/alpha_0 \
+  --reference /data/shengzhan/merge-and-rebase/artifacts/theseus/full_attention_hf/alpha_1 \
+  --output-root artifacts/theseus/random_attention_controls \
+  --alphas 0.5 1.0 \
+  --seeds 0 1 2 \
+  --expected-changed-tensors 64 \
+  --max-shard-size 2GB \
+  2>&1 | tee artifacts/theseus/logs/random_attention_controls.log
+```
+
+This performs no calibration, SVD, training, or evaluation. It creates six complete HF models
+under `random_attention_controls/seed_<seed>/alpha_<alpha>`. Each model contains a
+`theseus_random_control.json` manifest with both the reference norms and the actual effective norms
+after casting back to the checkpoint dtype. The tool compensates for BF16/FP16 rounding per tensor
+so the saved random perturbation stays as close as possible to the requested effective norm.
+
 ##### export a saved merged state as a Hugging Face checkpoint
 
 `--save-merged` writes a complete target-model state dict, not a delta. Export it with strict key checking and copy
