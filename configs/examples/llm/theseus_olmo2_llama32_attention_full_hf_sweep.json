@@ -22,7 +22,7 @@
   "alpha": {"search": false, "value": 1.0},
   "save": {
     "hf_root": "artifacts/theseus/full_attention_hf",
-    "hf_alphas": [0.0, 0.05, 0.1, 0.2, 0.3, 0.5],
+    "hf_alphas": [0.0, 0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 1.0],
     "hf_dtype": "bf16",
     "hf_max_shard_size": "2GB"
   },

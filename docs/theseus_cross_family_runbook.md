@@ -350,6 +350,8 @@ artifacts/theseus/full_attention_hf/alpha_0.1
 artifacts/theseus/full_attention_hf/alpha_0.2
 artifacts/theseus/full_attention_hf/alpha_0.3
 artifacts/theseus/full_attention_hf/alpha_0.5
+artifacts/theseus/full_attention_hf/alpha_0.7
+artifacts/theseus/full_attention_hf/alpha_1
 ```
 
 Each directory is directly loadable with `AutoModelForCausalLM.from_pretrained`. The relation is
