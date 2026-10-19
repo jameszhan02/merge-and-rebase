@@ -38,6 +38,7 @@ dependencies = [
 [project.scripts]
 theseus-model-audit = "merge_and_rebase.eval.diagnostics.theseus_model_audit:main"
 theseus-extract-task-vector = "merge_and_rebase.eval.diagnostics.extract_task_vector:main"
+theseus-export-hf = "merge_and_rebase.eval.diagnostics.export_hf_checkpoint:main"
 
 [project.optional-dependencies]
 # Core data stack for your vision benchmarks (HF datasets + PIL + hub)

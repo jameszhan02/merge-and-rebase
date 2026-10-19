@@ -323,6 +323,23 @@ of where the GSM8K number lands.
 
 #### my short cut cmds
 
+##### export a saved merged state as a Hugging Face checkpoint
+
+`--save-merged` writes a complete target-model state dict, not a delta. Export it with strict key checking and copy
+the target tokenizer/config into a standard Hugging Face directory:
+
+```bash
+uv run theseus-export-hf \
+  --base /data/shared_ckpt/Llama-3.2-1B \
+  --state artifacts/theseus/smoke_attention_alpha_0.pt \
+  --output artifacts/theseus/smoke_attention_alpha_0_hf \
+  --output-dtype fp32 \
+  --max-shard-size 2GB
+```
+
+The output path must not already exist, preventing stale model shards from an older export. Use `bf16` instead of
+`fp32` only when the smaller evaluation artifact is intentional; retain the original fp32 `.pt` for provenance.
+
 ##### exteract tuned weights
 
 uv run theseus-extract-task-vector \
