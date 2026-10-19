@@ -1,6 +1,6 @@
 {
   "method": {
-    "name": "theseus_gqa",
+    "name": "theseus",
     "params": {
       "num_batches": 2,
       "seed": 0,
@@ -18,14 +18,14 @@
       }
     }
   },
-  "depth_alignment": {"rule": "index_match"},
-  "alpha": {"search": false, "value": 0.05},
-  "save": {"merged": "artifacts/theseus/smoke_attention_alpha_0.05.pt"},
+  "depth_alignment": { "rule": "index_match" },
+  "alpha": { "search": false, "value": 0.05 },
+  "save": { "merged": "artifacts/theseus/smoke_attention_alpha_0.05.pt" },
   "source_model_name_or_path": "/data/shared_ckpt/OLMo-2-0425-1B",
   "target_model_name_or_path": "/data/shared_ckpt/Llama-3.2-1B",
   "model_kind": "causal_lm",
   "model_arch": "auto",
-  "tuned_bodies": {"gsm8k": "/data/shared_ckpt/opd_teacher"},
+  "tuned_bodies": { "gsm8k": "/data/shared_ckpt/opd_teacher" },
   "device": "cuda",
   "dtype": "bf16",
   "seed": 0,
