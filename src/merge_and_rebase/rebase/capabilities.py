@@ -117,6 +117,11 @@ def uses_calibration(method_name: str) -> bool:
 # keys to begin with (see Qwen3DecoderAdapter), so they're just left as-is.
 _COMPATIBLE_CROSS_FAMILY_PAIRS: frozenset[frozenset[str]] = frozenset({
     frozenset({"qwen2", "qwen3"}),
+    # Controlled decoder cross-family experiment: both use the standard dense
+    # HF q/k/v/o + SwiGLU projection layout. Architecture-specific norm
+    # parameters remain out of scope; THESEUS parameter_filter selects only
+    # explicitly comparable projections.
+    frozenset({"olmo2", "llama"}),
 })
 
 

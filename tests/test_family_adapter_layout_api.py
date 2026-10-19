@@ -138,6 +138,28 @@ def test_moe_config_rejected(model_type):
     check_pair("theseus", dense, dense)
 
 
+def test_olmo2_llama_cross_family_pair_is_supported():
+    olmo2 = ModelFamilyMetadata(
+        family="olmo2",
+        hidden_size=2048,
+        intermediate_size=8192,
+        num_hidden_layers=16,
+        num_attention_heads=16,
+        num_key_value_heads=16,
+        head_dim=128,
+    )
+    llama = ModelFamilyMetadata(
+        family="llama",
+        hidden_size=2048,
+        intermediate_size=8192,
+        num_hidden_layers=16,
+        num_attention_heads=32,
+        num_key_value_heads=8,
+        head_dim=64,
+    )
+    check_pair("theseus_gqa", olmo2, llama)
+
+
 def test_accessor_fallbacks_for_fakes():
     model = tiny_qwen2(layers=2)
 

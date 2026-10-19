@@ -14,11 +14,11 @@ MMLU/AlpacaEval/SST yet).
 
 ## 0. What changed in this repo, and why
 
-| Change | File(s) | Why |
-|---|---|---|
-| `layer_filter` method param (selective transport) | `rebase/methods/_shared.py`, `rebase/methods/theseus.py` | Experiment 3 needs "transport only these layers, leave the rest of the target's weights untouched." Nothing in the repo did this before. Implemented as a post-filter on the computed Procrustes transforms: a layer dropped from `layer_filter` becomes a "missing transform," which the existing (already-tested) non-strict apply path already treats as zero-contribution passthrough — so excluded layers keep the target's original weights, which is exactly selective transport. |
-| Alignment-diagnostic math library | `eval/diagnostics/theseus_alignment.py` | Experiment 1 needs `recon_error`, `rank_90`, `fidelity`-style, `norm_ratio` numbers per layer. The repo's own diagnostics (`_PrecomputeDiagnostics`/`_ApplyDiagnostics`) only count transported/skipped/wrong-shape keys — they don't measure alignment *quality*. This is new, pure math (no model/GPU dependency), unit-tested against synthetic ground truth. See the module docstring for exactly which formulas are verbatim from the paper (arXiv 2602.12952, Eq. 3 / Eq. 11) versus this project's own operational proxy (`recon_error`, `rank_at_variance`, the scalar `fidelity_score` reduction) — don't attribute the proxy metrics to the paper when writing this up. |
-| Unit tests | `tests/test_theseus_layer_filter.py`, `tests/test_theseus_alignment_diagnostics.py` | Both ran clean on CPU with synthetic tensors (`uv run --extra dev pytest tests/test_theseus_layer_filter.py tests/test_theseus_alignment_diagnostics.py tests/test_theseus_rebase.py` → 38 passed). No GPU or real checkpoint needed to trust this part; the full suite's pre-existing `test_reference_configs.py` failures are a Windows-locale (`gbk` codec) issue reading the YAML files, unrelated to these changes — confirmed by reproducing the same failures on a clean `git stash`. They won't occur on the Ubuntu server with a UTF-8 locale. |
+| Change                                            | File(s)                                                                             | Why                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| ------------------------------------------------- | ----------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `layer_filter` method param (selective transport) | `rebase/methods/_shared.py`, `rebase/methods/theseus.py`                            | Experiment 3 needs "transport only these layers, leave the rest of the target's weights untouched." Nothing in the repo did this before. Implemented as a post-filter on the computed Procrustes transforms: a layer dropped from `layer_filter` becomes a "missing transform," which the existing (already-tested) non-strict apply path already treats as zero-contribution passthrough — so excluded layers keep the target's original weights, which is exactly selective transport.                                                                                                                                                                                          |
+| Alignment-diagnostic math library                 | `eval/diagnostics/theseus_alignment.py`                                             | Experiment 1 needs `recon_error`, `rank_90`, `fidelity`-style, `norm_ratio` numbers per layer. The repo's own diagnostics (`_PrecomputeDiagnostics`/`_ApplyDiagnostics`) only count transported/skipped/wrong-shape keys — they don't measure alignment _quality_. This is new, pure math (no model/GPU dependency), unit-tested against synthetic ground truth. See the module docstring for exactly which formulas are verbatim from the paper (arXiv 2602.12952, Eq. 3 / Eq. 11) versus this project's own operational proxy (`recon_error`, `rank_at_variance`, the scalar `fidelity_score` reduction) — don't attribute the proxy metrics to the paper when writing this up. |
+| Unit tests                                        | `tests/test_theseus_layer_filter.py`, `tests/test_theseus_alignment_diagnostics.py` | Both ran clean on CPU with synthetic tensors (`uv run --extra dev pytest tests/test_theseus_layer_filter.py tests/test_theseus_alignment_diagnostics.py tests/test_theseus_rebase.py` → 38 passed). No GPU or real checkpoint needed to trust this part; the full suite's pre-existing `test_reference_configs.py` failures are a Windows-locale (`gbk` codec) issue reading the YAML files, unrelated to these changes — confirmed by reproducing the same failures on a clean `git stash`. They won't occur on the Ubuntu server with a UTF-8 locale.                                                                                                                           |
 
 What's **not** changed and doesn't need to be: `procrustes_maps()`/SVD, the `τ_B = T_out τ_A T_in^T`
 transport rule, the alpha-sweep loop, `depth_alignment` (BRACE vs. `index_match`), and GSM8K/MMLU
@@ -53,6 +53,7 @@ uv run python -m merge_and_rebase.eval.llm_rebase \
   --override target_base_ckpt=/path/to/your/llama3.2-1b-ultrachat-sft \
   --override harness_tasks='["gsm8k"]'
 ```
+
 (`method: identity` just scores the target as-is — no transport — to get your real floor number.)
 
 **Source** (your pick): verify all three checkpoints and the source module layout before writing any config. The
@@ -88,6 +89,7 @@ class YourFamilyDecoderAdapter(HfDecoderAdapter):
 from .hf_decoder import YourFamilyDecoderAdapter
 register(YourFamilyDecoderAdapter())
 ```
+
 Then run `python -c "from transformers import AutoModelForCausalLM; m = AutoModelForCausalLM.from_pretrained('<source-checkpoint>'); print(m)"`
 once and eyeball that the printed module tree really is `model.layers[i].self_attn.{q,k,v,o}_proj`
 / `model.layers[i].mlp.{gate,up,down}_proj` — if the names differ even slightly (fused qkv, a
@@ -123,10 +125,55 @@ Watch for: every transportable layer should show nonzero norm; a near-zero layer
 RLVR and should be dropped from consideration for Experiment 3's layer-selection variants. NaN/Inf
 anywhere here means something is already numerically broken — stop before step 4.
 
-For 0d (norm preservation), use the new library directly once you have one real `t_in`/`t_out`
-pair and task-vector slice (wire-up shown in step 4): `theseus_alignment.norm_ratio(tau_a, t_in,
-t_out)` must print ~1.0. This is an exact identity (paper Eq. 11) — any deviation beyond float
-error means the SVD/transform code path itself is broken, not a cross-family alignment finding.
+### OLMo2 -> Llama attention-only smoke run
+
+For the 16-layer `OLMo-2-0425-1B` / `Llama-3.2-1B` pair, run the checked-in smoke config before any full sweep:
+
+```bash
+mkdir -p artifacts/theseus/logs
+set -o pipefail
+uv run --extra dev pytest \
+  tests/test_llm_family_adapter.py \
+  tests/test_family_adapter_layout_api.py \
+  tests/test_theseus_layer_filter.py \
+  tests/test_theseus_cross_tokenizer_alignment.py \
+  tests/test_theseus_rebase.py -q
+
+# Plumbing control: alpha=0 must leave the target unchanged.
+uv run python -m merge_and_rebase.eval.llm_rebase \
+  --config configs/examples/llm/theseus_olmo2_llama32_attention_smoke.json \
+  --alpha 0 \
+  --save-merged artifacts/theseus/smoke_attention_alpha_0.pt \
+| tee artifacts/theseus/logs/attention_smoke_alpha_0.log
+
+# First non-zero transport.
+uv run python -m merge_and_rebase.eval.llm_rebase \
+  --config configs/examples/llm/theseus_olmo2_llama32_attention_smoke.json \
+| tee artifacts/theseus/logs/attention_smoke.log
+```
+
+The `parameter_filter` is applied before Procrustes SVDs, so this run fits exactly the 16 x 4 attention projection
+weights and does not allocate an 8192 x 8192 MLP SVD. The required log gates are:
+
+- `parameter_filter kept 64/... parameters`;
+- `registering hooks on 64 selected modules` (no MLP hooks in this round);
+- precompute diagnostics show `transport slots=64 usable=64`, with zero incomplete/unsupported/skipped counts;
+- `head-aware attention transforms = 64 weights`;
+- apply diagnostics report `active=64`, with zero wrong-shape and transport-failure counts;
+- no NaN/Inf and coherent sample generations.
+
+`out_of_scope_zero` is expected to be non-zero: it counts the deliberately excluded MLP/norm task-vector keys,
+not a transport failure.
+
+Do not start the full alpha sweep unless all gates pass. The full-calibration template is
+`configs/examples/llm/theseus_olmo2_llama32_attention_full.json`; copy it to a per-alpha config and change both
+`alpha.value` and `save.merged` together so results cannot overwrite one another.
+
+For 0d (norm preservation), test a **square dense-Procrustes** map (for example plain THESEUS on
+one q-projection) with `theseus_alignment.norm_ratio(tau_a, t_in, t_out)`; that ratio should be
+~1.0. Do not impose this invariant on OLMo2 -> Llama k/v maps or on duplicated/pooled
+`theseus_gqa` head blocks: those transforms are rectangular or not globally orthogonal, so their
+ratio is a measurement to report, not an expected identity.
 
 ## 4. Experiment 1 — diagnostics (no merging)
 
@@ -176,11 +223,12 @@ Experiment 0a shape audit — a silent wrong-module hook looks like a normal-sha
 tensor, it won't crash.
 
 **Numbers to read off this CSV:**
+
 - `recon_error` per layer: expect U-shaped across depth (better early/late, worse mid-stack). Flat
   and `> 0.7` everywhere → stop, no shared cross-family subspace, that's your finding.
 - `rank_90` per layer: `< 500/2048` is usable structure; consistently `> 1500` everywhere is the
   stop condition.
-- `fidelity_score`: distinct from `recon_error` — this is whether the *task vector's effect*
+- `fidelity_score`: distinct from `recon_error` — this is whether the _task vector's effect_
   survives, not whether raw activations align. This is the number that should predict Experiment
   3's selective-transport GSM8K gain.
 
@@ -196,10 +244,10 @@ method:
     seq_align: interpolate
     device_transform: gpu
 depth_alignment:
-  rule: index_match   # 16 == 16 layers: clean 1:1, no BRACE depth-bridging needed/wanted here
+  rule: index_match # 16 == 16 layers: clean 1:1, no BRACE depth-bridging needed/wanted here
 alpha:
   search: false
-  value: 1.0           # sweep: 0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 1.0 (separate runs, or alpha.search: true)
+  value: 1.0 # sweep: 0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 1.0 (separate runs, or alpha.search: true)
 source_model_name_or_path: <source-base-checkpoint>
 target_model_name_or_path: meta-llama/Llama-3.2-1B
 target_base_ckpt: /path/to/your/llama3.2-1b-ultrachat-sft
@@ -249,8 +297,9 @@ method:
     seq_align: interpolate
     device_transform: gpu
     layer_filter:
-      include: [2, 3, 9, 11]   # from the Exp 1 CSV; "exclude: [...]" is the other direction
+      include: [2, 3, 9, 11] # from the Exp 1 CSV; "exclude: [...]" is the other direction
 ```
+
 Everything else is identical to the Experiment 2 config. Re-run the same alpha sweep.
 
 **Watch**: does selective beat uniform at matched alpha? That correlation — high-`fidelity_score`
@@ -259,15 +308,35 @@ number you land on.
 
 ## 7. Final comparison
 
-| Method | GSM8K | Notes |
-|---|---|---|
-| Target floor (your UltraChat SFT'd Llama-3.2-1B, no transport) | *(re-measure, step 2)* | replaces the old 36.2% Instruct number |
-| OPD 1000 steps | 26.5% | existing baseline |
-| HeteroFusion | 7.2% | existing baseline, catastrophic forgetting |
-| Theseus full (best alpha) | ? | Experiment 2 |
-| Theseus selective (best config) | ? | Experiment 3 |
+| Method                                                         | GSM8K                  | Notes                                      |
+| -------------------------------------------------------------- | ---------------------- | ------------------------------------------ |
+| Target floor (your UltraChat SFT'd Llama-3.2-1B, no transport) | _(re-measure, step 2)_ | replaces the old 36.2% Instruct number     |
+| OPD 1000 steps                                                 | 26.5%                  | existing baseline                          |
+| HeteroFusion                                                   | 7.2%                   | existing baseline, catastrophic forgetting |
+| Theseus full (best alpha)                                      | ?                      | Experiment 2                               |
+| Theseus selective (best config)                                | ?                      | Experiment 3                               |
 
 Success bands (GSM8K only, per your current scope): **strong** ≥ floor + 4pp; **moderate** small
 gain, no coherence loss; **weak** ≈ floor, stable; **failure** well below floor — document the
 Experiment 1 diagnostics either way, since the layer-wise alignment story is a finding independent
 of where the GSM8K number lands.
+
+#### my short cut cmds
+
+##### exteract tuned weights
+
+uv run theseus-extract-task-vector \
+ --base /data/shared_ckpt/OLMo-2-0425-1B \
+ --tuned /data/shared_ckpt/opd_teacher \
+ --output artifacts/theseus/source_rlvr_task_vector.safetensors \
+ --output-dtype fp32 \
+ | tee artifacts/theseus/task_vector_extract.log
+
+##### checking shapes of two
+
+uv run theseus-model-audit \
+ --source-base /data/shared_ckpt/OLMo-2-0425-1B \
+ --source-tuned /data/shared_ckpt/opd_teacher \
+ --target /data/shared_ckpt/Llama-3.2-1B \
+ --json-output artifacts/theseus/model_audit.json \
+ | tee artifacts/theseus/model_audit.log

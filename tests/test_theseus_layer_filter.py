@@ -3,7 +3,11 @@ from __future__ import annotations
 import pytest
 import torch
 
-from merge_and_rebase.rebase.methods._shared import _LayerTransform, filter_transforms_by_layer
+from merge_and_rebase.rebase.methods._shared import (
+    _LayerTransform,
+    filter_mapping_by_parameter,
+    filter_transforms_by_layer,
+)
 
 
 def _transforms() -> dict[str, _LayerTransform]:
@@ -49,3 +53,23 @@ def test_empty_filter_is_a_no_op() -> None:
 def test_neither_include_nor_exclude_is_rejected() -> None:
     with pytest.raises(ValueError, match="include.*or.*exclude"):
         filter_transforms_by_layer(_transforms(), {"mode": "typo"})
+
+
+def test_parameter_filter_keeps_attention_projection_suffixes_only() -> None:
+    kept = filter_mapping_by_parameter(
+        _transforms(),
+        {"include": ["self_attn.q_proj.weight"]},
+    )
+    assert set(kept) == {
+        "model.layers.0.self_attn.q_proj.weight",
+        "model.layers.1.self_attn.q_proj.weight",
+    }
+
+
+def test_parameter_filter_supports_globs_and_rejects_bad_config() -> None:
+    kept = filter_mapping_by_parameter(_transforms(), {"include": ["*.mlp.down_proj.weight"]})
+    assert set(kept) == {"model.layers.2.mlp.down_proj.weight"}
+    with pytest.raises(ValueError, match="include.*or.*exclude"):
+        filter_mapping_by_parameter(_transforms(), {"include": ["q_proj"], "exclude": ["mlp"]})
+    with pytest.raises(ValueError, match="non-empty"):
+        filter_mapping_by_parameter(_transforms(), {"include": []})

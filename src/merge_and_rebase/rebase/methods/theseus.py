@@ -41,10 +41,12 @@ from ._shared import (  # noqa: F401
     _activation_group,  # noqa: F401
     _ActivationHook,  # noqa: F401
     _align_features,  # noqa: F401
+    _align_text_content_features,
     _append_diagnostic_example,  # noqa: F401
     _apply_transforms_to_visual_delta,  # noqa: F401
     _ApplyDiagnostics,  # noqa: F401
     _build_grouped_covariances,  # noqa: F401
+    filter_mapping_by_parameter,
     filter_transforms_by_layer,
     _build_grouped_transforms,  # noqa: F401
     _compute_alignment_map,  # noqa: F401
@@ -149,6 +151,7 @@ def _activation_cache_fingerprint(
     whiten_eps: float,
     source_activation_plan: InterpolatedBlockActivations | None = None,
     source_model_ft: nn.Module | None = None,
+    activation_module_names: set[str] | None = None,
 ) -> str:
     """Fingerprint every input that affects streamed activation statistics."""
     digest = sha256()
@@ -161,6 +164,7 @@ def _activation_cache_fingerprint(
         float(whiten_power),
         float(whiten_eps),
         None if source_activation_plan is None else source_activation_plan.fingerprint(),
+        None if activation_module_names is None else tuple(sorted(activation_module_names)),
     ):
         digest.update(repr(value).encode())
     # The combination weights are applied after collection, so they do not
@@ -324,6 +328,7 @@ def collect_activations(
     source_activation_plan: InterpolatedBlockActivations | None = None,
     source_model_ft: torch.nn.Module | None = None,
     padding_stats: dict[str, int] | None = None,
+    activation_module_names: set[str] | None = None,
 ) -> dict[str, ActivationStore]:
     """Stream paired source/target activation statistics.
 
@@ -347,12 +352,16 @@ def collect_activations(
         target_scope = None
 
     registry: dict[str, ActivationStore] = {}
-    source_hook = _ActivationHook(source_model, scope=source_scope)
-    target_hook = _ActivationHook(target_model, scope=target_scope)
+    source_hook = _ActivationHook(source_model, scope=source_scope, module_names=activation_module_names)
+    target_hook = _ActivationHook(target_model, scope=target_scope, module_names=activation_module_names)
     source_ft_hook: _ActivationHook | None = None
     if source_model_ft is not None:
         source_ft_scope = family_adapter.transport_scope(source_model_ft) if family_adapter is not None else None
-        source_ft_hook = _ActivationHook(source_model_ft, scope=source_ft_scope)
+        source_ft_hook = _ActivationHook(
+            source_model_ft,
+            scope=source_ft_scope,
+            module_names=activation_module_names,
+        )
     dev = _resolve_device(device)
 
     try:
@@ -371,6 +380,8 @@ def collect_activations(
             if n_batches is not None and idx >= n_batches:
                 break
 
+            s_attn: torch.Tensor | None = None
+            t_attn: torch.Tensor | None = None
             with cost_phase("activation_collection"):
                 if family_adapter is not None:
                     source_inputs = family_adapter.extract_calibration_batch(source_batch)
@@ -428,10 +439,20 @@ def collect_activations(
                     for key in set(source_side.keys()) & set(target_side.keys()):
                         if not _poolable(seq_align, source_side[key], target_side[key]):
                             continue  # integer hook inputs (embedding input_ids) cannot be pooled
-                        src_rows, tgt_rows = _align_features(
-                            source_side[key], target_side[key], mode=seq_align, content_mask=row_mask
+                        text_rows = _align_text_content_features(
+                            source_side[key],
+                            target_side[key],
+                            mode=seq_align,
+                            source_attention_mask=s_attn,
+                            target_attention_mask=t_attn,
                         )
-                        src_rows, tgt_rows = _drop_padding_rows(src_rows, tgt_rows, row_mask)
+                        if text_rows is not None:
+                            src_rows, tgt_rows = text_rows
+                        else:
+                            src_rows, tgt_rows = _align_features(
+                                source_side[key], target_side[key], mode=seq_align, content_mask=row_mask
+                            )
+                            src_rows, tgt_rows = _drop_padding_rows(src_rows, tgt_rows, row_mask)
                         registry.setdefault(
                             f"{prefix}{key}.{side}",
                             ActivationStore(
@@ -520,6 +541,7 @@ class TheseusRebase:
             raise ValueError("device_transform must be one of: cpu, gpu")
         svd_device = device if device_transform == "gpu" else "cpu"
         layer_filter = kwargs.pop("layer_filter", None)
+        parameter_filter = kwargs.pop("parameter_filter", None)
         reject_unread_method_params(self.name, kwargs)
         del kwargs
         #Config fallbacks num_batches -> n_batches
@@ -595,6 +617,23 @@ class TheseusRebase:
         elif verbose:
             print(f"{log_prefix} prepare: split_qkv disabled")
 
+        activation_module_names: set[str] | None = None
+        if family_adapter is not None and parameter_filter is not None and delta is not None:
+            selected_delta = filter_mapping_by_parameter(delta, parameter_filter)
+            target_param_to_module = family_adapter.param_to_module(target_model)
+            activation_module_names = {
+                target_param_to_module[key]
+                for key in selected_delta
+                if key in target_param_to_module
+            }
+            if not activation_module_names:
+                raise ValueError("parameter_filter selected no hookable decoder parameters")
+            if verbose:
+                print(
+                    f"{log_prefix} prepare: registering hooks on "
+                    f"{len(activation_module_names)} selected modules"
+                )
+
         activation_registry: dict[str, ActivationStore] = {}
         padding_stats: dict[str, int] = {}
         transforms_by_key: dict[str, _LayerTransform] = {}
@@ -631,6 +670,7 @@ class TheseusRebase:
                         whiten_eps=whiten_eps,
                         source_activation_plan=source_activation_plan,
                         source_model_ft=source_model_ft,
+                        activation_module_names=activation_module_names,
                     )
                     cache_path = Path(activation_cache_dir) / f"theseus_activations_{fingerprint}.pt"
                     if activation_cache_mode != "refresh" and cache_path.exists():
@@ -661,6 +701,7 @@ class TheseusRebase:
                         source_activation_plan=source_activation_plan,
                         source_model_ft=source_model_ft,
                         padding_stats=padding_stats,
+                        activation_module_names=activation_module_names,
                     )
                     if cache_path is not None:
                         cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -699,6 +740,15 @@ class TheseusRebase:
                         for stripped_key, original_key in visual_key_map.items()
                         if stripped_key in target_visual_base
                     }
+
+                if parameter_filter is not None:
+                    before = len(visual_delta)
+                    visual_delta = filter_mapping_by_parameter(visual_delta, parameter_filter)
+                    target_visual_base = {key: target_visual_base[key] for key in visual_delta}
+                    if verbose:
+                        print(
+                            f"{log_prefix} prepare: parameter_filter kept {len(visual_delta)}/{before} parameters"
+                        )
 
                 if split_fused_qkv and family_adapter is None:
                     target_visual_base = _split_fused_qkv_state(target_visual_base)
@@ -795,6 +845,7 @@ class TheseusRebase:
             "covariance_source": covariance_source,
             "covariance_mixture_beta": covariance_mixture_beta,
             "device_transform": device_transform,
+            "parameter_filter": parameter_filter,
             "compute_device": _resolve_device(device) if device_transform == "gpu" else torch.device("cpu"),
             "precompute_diagnostics": {
                 "slots": precompute_diag.slots,

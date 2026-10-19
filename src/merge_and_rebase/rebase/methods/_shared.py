@@ -83,22 +83,28 @@ def apply_prepared_transforms(
     if transforms_by_key is None:
         raise ValueError(f"{method_label} prepared payload is missing 'transforms_by_key'.")
 
+    parameter_filter = prepared.get("parameter_filter")
+    filtered_delta = filter_mapping_by_parameter(delta, parameter_filter)
+
     if family_adapter is not None:
         tp_keys = family_adapter.transportable_keys(target_base)
-        key_map = {k: k for k in delta if k in tp_keys}
+        key_map = {k: k for k in filtered_delta if k in tp_keys}
         target_scoped_base = {k: target_base[k] for k in key_map.values() if k in target_base}
         target_scoped_base_work = target_scoped_base
-        scoped_delta_work = {k: delta[k] for k in key_map if k in target_scoped_base}
+        scoped_delta_work = {k: filtered_delta[k] for k in key_map if k in target_scoped_base}
         split_fused_qkv = False  # decoders have separate q/k/v projections
-        out_of_scope_keys = tuple(k for k in delta if k not in tp_keys and k in target_base)
+        out_of_scope_keys = tuple(k for k in delta if k not in key_map and k in target_base)
         skipped_not_in_target_keys = tuple(k for k in key_map if k not in target_base)
     else:
-        key_map = _visual_delta_keys(delta)
+        key_map = _visual_delta_keys(filtered_delta)
         target_scoped_base = _visual_state_dict(target_base)
-        scoped_delta = {stripped_key: delta[original_key] for stripped_key, original_key in key_map.items()}
-        has_prefixed_keys = any(key.startswith(_VISUAL_PREFIX) for key in delta)
+        scoped_delta = {stripped_key: filtered_delta[original_key] for stripped_key, original_key in key_map.items()}
+        has_prefixed_keys = any(key.startswith(_VISUAL_PREFIX) for key in filtered_delta)
         out_of_scope_keys = tuple(
-            key for key in delta if has_prefixed_keys and not key.startswith(_VISUAL_PREFIX) and key in target_base
+            key
+            for key in delta
+            if key not in filtered_delta
+            or (has_prefixed_keys and not key.startswith(_VISUAL_PREFIX) and key in target_base)
         )
         skipped_not_in_target_keys = tuple(
             original_key
@@ -458,6 +464,77 @@ def _align_features(
     return source_tokens.reshape(-1, source_tokens.shape[-1]), target_tokens.reshape(-1, target_tokens.shape[-1])
 
 
+def _align_text_content_features(
+    source_feat: torch.Tensor,
+    target_feat: torch.Tensor,
+    *,
+    mode: str,
+    source_attention_mask: torch.Tensor | None,
+    target_attention_mask: torch.Tensor | None,
+) -> tuple[torch.Tensor, torch.Tensor] | None:
+    """Align decoder activations after removing each tokenizer's padding.
+
+    Cross-tokenizer loaders pad both sides to the same configured maximum, so
+    comparing the padded tensor lengths cannot tell whether the underlying
+    token sequences have different lengths.  For ordinary ``(B, L, D)``
+    decoder activations, slice each example by its own attention mask first,
+    then align source content to target content.  ``None`` asks the caller to
+    use the generic path for non-token tensors such as embedding inputs or
+    per-head Q/K-normalization activations.
+    """
+    if mode not in {"interpolate", "mean", "cls"}:
+        return None
+    if source_feat.ndim != 3 or target_feat.ndim != 3:
+        return None
+    if not isinstance(source_attention_mask, torch.Tensor) or not isinstance(target_attention_mask, torch.Tensor):
+        return None
+    if source_attention_mask.ndim != 2 or target_attention_mask.ndim != 2:
+        return None
+    if source_feat.shape[:2] != source_attention_mask.shape:
+        return None
+    if target_feat.shape[:2] != target_attention_mask.shape:
+        return None
+    if source_feat.shape[0] != target_feat.shape[0]:
+        raise ValueError(
+            "Theseus calibration expects aligned batch sizes. "
+            f"Got {source_feat.shape[0]} and {target_feat.shape[0]}."
+        )
+
+    source_mask = source_attention_mask.detach().to(device=source_feat.device).bool()
+    target_mask = target_attention_mask.detach().to(device=target_feat.device).bool()
+    source_rows: list[torch.Tensor] = []
+    target_rows: list[torch.Tensor] = []
+    for idx in range(int(source_feat.shape[0])):
+        source_content = source_feat[idx, source_mask[idx]]
+        target_content = target_feat[idx, target_mask[idx]]
+        if source_content.shape[0] == 0 or target_content.shape[0] == 0:
+            continue
+        if mode == "interpolate":
+            interpolation_input = (
+                source_content
+                if source_content.dtype in {torch.float32, torch.float64}
+                else source_content.float()
+            )
+            source_content = _interp_linear_tokens(
+                interpolation_input.unsqueeze(0), int(target_content.shape[0])
+            ).squeeze(0)
+        elif mode == "mean":
+            source_content = source_content.mean(dim=0, keepdim=True)
+            target_content = target_content.mean(dim=0, keepdim=True)
+        else:  # cls: first content token, independent of left/right padding.
+            source_content = source_content[:1]
+            target_content = target_content[:1]
+        source_rows.append(source_content)
+        target_rows.append(target_content)
+
+    if not source_rows:
+        return (
+            source_feat.new_empty((0, source_feat.shape[-1])),
+            target_feat.new_empty((0, target_feat.shape[-1])),
+        )
+    return torch.cat(source_rows, dim=0), torch.cat(target_rows, dim=0)
+
+
 def _poolable(mode: str, *features: torch.Tensor) -> bool:
     """False when mean/cls pooling cannot apply (integer features such as the embedding's input_ids).
 
@@ -710,17 +787,27 @@ class InterpolatedBlockActivations:
 
 
 class _ActivationHook:
-    def __init__(self, model: torch.nn.Module, *, scope: torch.nn.Module | None = None):
+    def __init__(
+        self,
+        model: torch.nn.Module,
+        *,
+        scope: torch.nn.Module | None = None,
+        module_names: set[str] | None = None,
+    ):
         self.model = scope if scope is not None else _visual_module(model)
+        self.module_names = module_names
         self.inputs: dict[str, torch.Tensor] = {}
         self.outputs: dict[str, torch.Tensor] = {}
         self.handles: list[Any] = []
         self._register_hooks()
 
     def _register_hooks(self) -> None:
-        self.handles.append(self.model.register_forward_hook(self._make_hook("")))
+        if self.module_names is None or "" in self.module_names:
+            self.handles.append(self.model.register_forward_hook(self._make_hook("")))
         for name, module in self.model.named_modules():
             if name == "":
+                continue
+            if self.module_names is not None and name not in self.module_names:
                 continue
             if list(module.parameters(recurse=False)):
                 self.handles.append(module.register_forward_hook(self._make_hook(name)))
@@ -1074,6 +1161,47 @@ def filter_transforms_by_layer(
         elif idx not in exclude_set:
             kept[key] = transform
     return kept
+
+
+def filter_mapping_by_parameter(
+    values_by_key: Mapping[str, Any],
+    parameter_filter: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Keep or drop parameter keys by full-key glob or suffix.
+
+    ``parameter_filter`` is ``{"include": [pattern, ...]}`` or
+    ``{"exclude": [pattern, ...]}``. A glob is matched against the full key;
+    a plain pattern matches either the full key or its suffix.
+    """
+    if not parameter_filter:
+        return dict(values_by_key)
+    include = parameter_filter.get("include")
+    exclude = parameter_filter.get("exclude")
+    if include is not None and exclude is not None:
+        raise ValueError("parameter_filter accepts 'include' or 'exclude', not both")
+    if include is None and exclude is None:
+        raise ValueError("parameter_filter must set 'include' or 'exclude'")
+    raw_patterns = include if include is not None else exclude
+    if isinstance(raw_patterns, str) or not isinstance(raw_patterns, Iterable):
+        raise TypeError("parameter_filter patterns must be a list of non-empty strings")
+    patterns = tuple(str(pattern).strip() for pattern in raw_patterns)
+    if not patterns or any(not pattern for pattern in patterns):
+        raise ValueError("parameter_filter patterns must be a non-empty list of non-empty strings")
+
+    from fnmatch import fnmatchcase
+
+    def matches(key: str) -> bool:
+        for pattern in patterns:
+            if any(char in pattern for char in "*?["):
+                if fnmatchcase(key, pattern):
+                    return True
+            elif key == pattern or key.endswith(pattern):
+                return True
+        return False
+
+    if include is not None:
+        return {key: value for key, value in values_by_key.items() if matches(key)}
+    return {key: value for key, value in values_by_key.items() if not matches(key)}
 
 
 @dataclass(frozen=True)

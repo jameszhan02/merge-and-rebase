@@ -6,6 +6,7 @@ import torch.nn as nn
 from merge_and_rebase.rebase.model_families import infer_family, list_families
 from merge_and_rebase.rebase.model_families.hf_decoder import (
     LlamaDecoderAdapter,
+    Olmo2DecoderAdapter,
     Qwen2DecoderAdapter,
     Qwen3DecoderAdapter,
 )
@@ -46,6 +47,7 @@ class _FakeModel(nn.Module):
 
 def test_families_registered() -> None:
     assert "llama" in list_families()
+    assert "olmo2" in list_families()
     assert "qwen2" in list_families()
     assert "qwen3" in list_families()
 
@@ -54,6 +56,12 @@ def test_llama_adapter_matches() -> None:
     adapter = LlamaDecoderAdapter()
     assert adapter._matches_model_type("llama")
     assert not adapter._matches_model_type("qwen2")
+
+
+def test_olmo2_adapter_matches() -> None:
+    adapter = Olmo2DecoderAdapter()
+    assert adapter._matches_model_type("olmo2")
+    assert not adapter._matches_model_type("llama")
 
 
 def test_qwen2_adapter_matches() -> None:

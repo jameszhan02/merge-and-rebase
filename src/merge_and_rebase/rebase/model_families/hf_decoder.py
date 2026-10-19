@@ -297,6 +297,37 @@ class LlamaDecoderAdapter(HfDecoderAdapter):
     _MODEL_TYPES = frozenset({"llama"})
 
 
+class Olmo2DecoderAdapter(HfDecoderAdapter):
+    """OLMo2's dense HF decoder layout.
+
+    OLMo2 shares the ``model.layers.*.self_attn.{q,k,v,o}_proj`` and
+    ``mlp.{gate,up,down}_proj`` paths used by Llama, but uses post-normalized
+    residual branches and adds Q/K RMSNorm.  Q/K norm parameters and
+    ``post_feedforward_layernorm`` are intentionally not added to the shared
+    transportable suffix set: they have no direct Llama counterpart.
+    """
+
+    name: str = "olmo2"
+    _MODEL_TYPES = frozenset({"olmo2"})
+
+    def block_components(self, block: nn.Module) -> dict[str, nn.Module]:
+        # Do not invent an ``input_layernorm`` alias: OLMo2 has no such
+        # component. Equal-depth THESEUS does not require one, and callers that
+        # inspect the layout should see the real architecture.
+        paths = {
+            "q_proj": "self_attn.q_proj",
+            "k_proj": "self_attn.k_proj",
+            "v_proj": "self_attn.v_proj",
+            "o_proj": "self_attn.o_proj",
+            "post_attention_layernorm": "post_attention_layernorm",
+            "gate_proj": "mlp.gate_proj",
+            "up_proj": "mlp.up_proj",
+            "down_proj": "mlp.down_proj",
+            "post_feedforward_layernorm": "post_feedforward_layernorm",
+        }
+        return {name: _resolve_path(block, path) for name, path in paths.items()}
+
+
 class Qwen2DecoderAdapter(HfDecoderAdapter):
     name: str = "qwen2"
     _MODEL_TYPES = frozenset({"qwen2", "qwen2_moe"})

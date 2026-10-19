@@ -42,6 +42,9 @@ method:
     #                                       #   vision stage supplies: raises on LLMs.
     # covariance_mixture_beta: 0.5          # [vision-only] mixture weight (covariance_source=mixture).
     # transform_granularity: "param"        # [ablation] map sharing: param | module_type | block | global.
+    # parameter_filter: null                # include/exclude full-key globs or suffixes before SVD; e.g.
+    #                                       # {include: [self_attn.q_proj.weight, self_attn.k_proj.weight,
+    #                                       #            self_attn.v_proj.weight, self_attn.o_proj.weight]}.
     # activation_cache_dir: null            # activation cache directory (required when activation_cache_mode != off).
     # activation_cache_mode: "off"          # off | auto | load | refresh.
     # activation_cache_key: null            # explicit cache key.
