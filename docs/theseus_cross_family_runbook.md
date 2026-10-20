@@ -98,6 +98,35 @@ differently-named norm, an extra QK-norm module like Qwen3's), that's the #1 rea
 
 ## 3. Experiment 0 — sanity checks (no transport yet)
 
+### Optional same-family reference: Llama Base to Instruct
+
+Before interpreting a cross-family task vector, measure how an ordinary same-family post-training
+update is distributed. This command compares two shape-compatible Hugging Face checkpoints without
+saving another copy of their task vector:
+
+```bash
+uv run theseus-checkpoint-diff \
+  --base /data/shared_ckpt/Llama-3.2-1B \
+  --tuned /data/shared_ckpt/Llama-3.2-1B-Instruct \
+  --output-dir artifacts/theseus/llama_base_to_instruct_diff \
+  2>&1 | tee artifacts/theseus/logs/llama_base_to_instruct_diff.log
+```
+
+The output is reporting data only; it does not write a checkpoint or task-vector file. It contains a
+human-readable `report.md`, machine-readable `parameters.csv`, `layers.csv`, `components.csv` and
+`summary.json`, plus `layers.png` and `components.png`. Interpret the columns together:
+
+- `relative_norm = ||delta|| / ||base||` measures update size relative to the original weights;
+- `delta_rms` removes the automatic advantage of tensors with more elements;
+- `update_energy_fraction` says where the squared task-vector norm is concentrated;
+- `changed_fraction` says how many stored elements differ, not whether those differences matter to behavior.
+
+These are descriptive weight-space measurements. A layer with a large update is not necessarily
+causally important. Use the ranking to define a small number of layer groups, then test hybrids such
+as `base + early-layer delta`, `base + middle-layer delta`, and `base + late-layer delta` under the
+same evaluation protocol. That intervention is what answers which changes actually produce the
+Instruct behavior.
+
 Extract and validate the source task vector from the two complete dense Hugging Face checkpoints:
 
 ```bash
